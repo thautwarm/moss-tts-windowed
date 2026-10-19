@@ -17,7 +17,7 @@ mkdir -p "$DEST"
 
 # 文件:sha256
 FILES="
-moss_tts_v15_firstclass_q4_k_m_aq8.gguf:ae09b5f4b4603d6e61edd2ff0024bb521239680819a956a0d16ee18c47fe7a3e
+moss_tts_v15_firstclass_q4_k_m_aq8.gguf:2805b9889f63e2f8aa681361b2b1127b101d9c64610918b26fca488d44a0a2a6
 moss_tts_audio_decoder_f16.gguf:84034fa745ee38bc0bacfde5904e19c2db3fb402e5fe079c655550b1f9b189c4
 moss_tts_audio_encoder_f16.gguf:8ca93e721ac95a56a64661b1fddfd990a8054abec58ac522a0103b8923902b46
 "
@@ -34,7 +34,7 @@ for entry in $FILES; do
   fi
 
   echo "下载 $name ..."
-  if ! curl -fL --retry 3 --retry-all-errors -o "$out.part" "$BASE/$name"; then
+  if ! curl -fL --retry 3 --retry-all-errors -s --progress-bar -o "$out.part" "$BASE/$name"; then
     echo "  下载失败：$BASE/$name" >&2
     rm -f "$out.part"; fail=1; continue
   fi
