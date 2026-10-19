@@ -62,6 +62,9 @@ moss_tts_audio_decoder_f16.gguf           # 推理时用
 
 > `convert.sh` 会自动构建它需要的两个镜像（CPU 转换镜像 + 应用镜像），
 > 所以请**先完成第 2 节的构建**再跑它。
+>
+> 如果已经拿到别人的 backbone GGUF（例如官方发布的 `MOSS_TTS_Q4_K_M.gguf`），
+> 只需要转编解码器：`./scripts/convert.sh --tokenizer-only`。
 
 ---
 
@@ -216,6 +219,7 @@ MOSS_AUDIO_REPETITION_PENALTY=1.0
 | 变量 | 默认 | 作用 |
 |---|---|---|
 | `TTSPORT` | `6677` | 宿主端口 |
+| `MOSS_UID` / `MOSS_GID` | `1000` | 容器以宿主的 uid/gid 运行（`id -u` / `id -g`） |
 | `MOSS_MODELS_HOST` | `./models` | 模型目录（宿主路径） |
 | `MOSS_MODEL_FILE` | `moss_tts_v15_firstclass_q4_k_m_aq8.gguf` | backbone |
 | `MOSS_DECODER_FILE` | `moss_tts_audio_decoder_f16.gguf` | 解码器 |

@@ -15,6 +15,12 @@ GGUF="$WORK/gguf"
 CONV_IMAGE="${CONV_IMAGE:-moss-tts-convert:latest}"
 QUANT_IMAGE="${QUANT_IMAGE:-stack-moss-tts-windowed:latest}"
 QUANT="${QUANT:-Q4_K_M}"
+ONLY=""
+case "${1:-}" in
+  --tokenizer-only) ONLY=tokenizer ;;   # 只转 encoder/decoder（已有 backbone GGUF 时用）
+  "") ;;
+  *) echo "usage: $0 [--tokenizer-only]" >&2; exit 1 ;;
+esac
 mkdir -p "$GGUF"
 
 F16="$GGUF/moss_tts_v15_firstclass_f16.gguf"
@@ -25,27 +31,45 @@ step() { printf '\n\033[1;36m== %s ==\033[0m\n' "$*"; }
 ensure() { docker image inspect "$1" >/dev/null 2>&1 || { step "build $1"; shift; "$@"; }; }
 
 ensure "$CONV_IMAGE"  docker build -f "$ROOT/docker/Dockerfile.convert" -t "$CONV_IMAGE" "$ROOT/docker"
-ensure "$QUANT_IMAGE" docker build -f "$ROOT/docker/Dockerfile"        -t "$QUANT_IMAGE" "$ROOT"
+if [ "$ONLY" != "tokenizer" ]; then
+  ensure "$QUANT_IMAGE" docker build -f "$ROOT/docker/Dockerfile" -t "$QUANT_IMAGE" "$ROOT"
+fi
 
 [ -d "$FORK" ] || { echo "缺少 $FORK，先跑 ./scripts/fetch-llama-cpp.sh" >&2; exit 1; }
-for m in MOSS-TTS-v1.5 MOSS-Audio-Tokenizer; do
+if [ "$ONLY" = "tokenizer" ]; then
+  NEED="MOSS-Audio-Tokenizer"
+else
+  NEED="MOSS-TTS-v1.5 MOSS-Audio-Tokenizer"
+fi
+for m in $NEED; do
   [ -d "$WORK/hf/$m" ] || { echo "缺少 work/hf/$m（见 README 的下载命令）" >&2; exit 1; }
 done
 
-# ── 1. 融合 backbone GGUF (f16) + codec GGUF ───────────────────────────────
-if [ ! -s "$F16" ]; then
-  step "convert HF -> first-class f16 GGUF (+ codec)"
-  # 注意：convert_hf_to_gguf.py 自带 gguf-py（sys.path 注入），无需 pip install gguf。
+# ── 1a. codec GGUF（encoder/decoder）───────────────────────────────────────
+if [ ! -s "$GGUF/moss_tts_audio_decoder_f16.gguf" ]; then
+  step "convert audio tokenizer -> encoder/decoder GGUF"
   # 注意：fork docs 里写的 `--outdir` 已过时，实际是 --encoder-outfile/--decoder-outfile。
-  docker run --rm -v "$WORK":/work -v "$FORK":/fork:ro -w /fork "$CONV_IMAGE" bash -lc '
-    set -e
-    python3 convert_hf_to_gguf.py /work/hf/MOSS-TTS-v1.5 \
-        --outfile /work/gguf/moss_tts_v15_firstclass_f16.gguf --outtype f16
+  docker run --rm -v "$WORK":/work -v "$FORK":/fork:ro -w /fork "$CONV_IMAGE" \
     python3 convert_moss_audio_tokenizer_split_to_gguf.py /work/hf/MOSS-Audio-Tokenizer \
         --encoder-outfile /work/gguf/moss_tts_audio_encoder_f16.gguf \
         --decoder-outfile /work/gguf/moss_tts_audio_decoder_f16.gguf \
         --outtype f16
-  '
+else
+  echo "skip (exists): moss_tts_audio_decoder_f16.gguf"
+fi
+
+if [ "$ONLY" = "tokenizer" ]; then
+  step "done（--tokenizer-only）"
+  ls -lh "$GGUF"/moss_tts_audio_*_f16.gguf
+  exit 0
+fi
+
+# ── 1b. 融合 backbone GGUF (f16) ───────────────────────────────────────────
+if [ ! -s "$F16" ]; then
+  step "convert HF -> first-class f16 GGUF"
+  docker run --rm -v "$WORK":/work -v "$FORK":/fork:ro -w /fork "$CONV_IMAGE" \
+    python3 convert_hf_to_gguf.py /work/hf/MOSS-TTS-v1.5 \
+        --outfile /work/gguf/moss_tts_v15_firstclass_f16.gguf --outtype f16
 else
   echo "skip (exists): $F16"
 fi

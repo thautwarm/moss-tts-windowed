@@ -14,7 +14,7 @@ services:
     init: true
     # 以宿主用户跑：容器往 voices/、run/ 写的文件属主才正确，
     # 宿主也能直接连 /run/moss/serve.sock 调试（CUDA 在非 root 下实测正常）
-    user: "1000:1000"
+    user: "${MOSS_UID:-1000}:${MOSS_GID:-1000}"
     ports:
       - "${TTSPORT:-6677}:8080"
     volumes:
