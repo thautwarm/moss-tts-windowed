@@ -23,6 +23,7 @@ MODEL_FILE="${MOSS_MODEL_FILE:-moss_tts_v15_firstclass_q4_k_m_aq8.gguf}"
 DECODER_FILE="${MOSS_DECODER_FILE:-moss_tts_audio_decoder_f16.gguf}"
 NGL="${MOSS_NGL:--1}"
 SOCK="${MOSS_DAEMON_SOCK:-/run/moss/serve.sock}"
+NDAEMONS="${MOSS_DAEMONS:-1}"   # 并行 daemon 数（每个占 ~6.8 GB 显存、一套模型）
 WINDOW="${MOSS_STREAM_WINDOW:-8}"
 OVERLAP="${MOSS_STREAM_OVERLAP:-8}"
 MAXMNT="${MOSS_SERVE_MAX_NEW_TOKENS:-448}"
@@ -33,10 +34,13 @@ CTXKEEP="${MOSS_CTX_KEEP:-2048}"   # patch 0009：滑窗保留的最近音频行
 PORT="${MOSS_LISTEN_PORT:-8080}"   # 容器内监听端口固定 8080；TTSPORT 只是宿主侧映射（compose 插值）
 
 mkdir -p "$(dirname "$SOCK")"
-rm -f "$SOCK"
+rm -f "$SOCK" "$(dirname "$SOCK")"/serve-*.sock
+
+# 第 0 个用 $SOCK（保持对外/调试路径不变），其余用 serve-<i>.sock
+sock_for() { [ "$1" = 0 ] && echo "$SOCK" || echo "$(dirname "$SOCK")/serve-$1.sock"; }
 
 start_daemon() {
-  llama-moss-tts --serve-unix "$SOCK" \
+  llama-moss-tts --serve-unix "$1" \
     -m "$MODELS_DIR/$MODEL_FILE" \
     --audio-decoder-model "$MODELS_DIR/$DECODER_FILE" \
     -ngl "$NGL" \
@@ -50,24 +54,29 @@ start_daemon() {
     --serve-vocab-model "$MODELS_DIR/$MODEL_FILE"
 }
 
-# 常驻 daemon：守护循环（崩了 2 秒后重来；模型会重新加载，这是有意的兜底）
-(
-  while true; do
-    echo "[entrypoint] 启动常驻 daemon：$SOCK（window=$WINDOW overlap=$OVERLAP max_mnt=$MAXMNT ubatch=$UBATCH/${UBUDGET}MiB）"
-    start_daemon
-    rc=$?
-    echo "[entrypoint] daemon 退出（rc=$rc），2s 后重启"
-    sleep 2
-  done
-) &
+# 常驻 daemon：每个实例一个守护循环（崩了 2 秒后重来；模型会重新加载，这是有意的兜底）
+for i in $(seq 0 $((NDAEMONS - 1))); do
+  s="$(sock_for "$i")"
+  (
+    while true; do
+      echo "[entrypoint] 启动常驻 daemon #$i：$s（window=$WINDOW overlap=$OVERLAP max_mnt=$MAXMNT ubatch=$UBATCH/${UBUDGET}MiB）"
+      start_daemon "$s"
+      rc=$?
+      echo "[entrypoint] daemon #$i 退出（rc=$rc），2s 后重启"
+      sleep 2
+    done
+  ) &
+done
 
-echo "[entrypoint] 等 daemon socket 就绪..."
+echo "[entrypoint] 等 $NDAEMONS 个 daemon socket 就绪..."
 for _ in $(seq 1 900); do
-  [ -S "$SOCK" ] && break
+  n=0
+  for i in $(seq 0 $((NDAEMONS - 1))); do [ -S "$(sock_for "$i")" ] && n=$((n + 1)); done
+  [ "$n" = "$NDAEMONS" ] && break
   sleep 0.2
 done
-if [ ! -S "$SOCK" ]; then
-  echo "[entrypoint] ⚠️ daemon socket 没起来（前端会返回 503，但容器继续跑，方便看日志）"
+if [ "$n" != "$NDAEMONS" ]; then
+  echo "[entrypoint] ⚠️ 只有 $n/$NDAEMONS 个 daemon socket 起来（前端会把不可用的返回 503，容器继续跑）"
 fi
 
 echo "[entrypoint] 启动 FastAPI 前端：0.0.0.0:$PORT"

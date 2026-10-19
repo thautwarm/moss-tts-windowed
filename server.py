@@ -504,9 +504,21 @@ class DaemonError(Exception):
 # daemon 是单线程、一次只服务一个请求。前端这里做一层显式队列：
 #   · 最多同时排队 MOSS_QUEUE_MAX 个（含正在跑的那个）；
 #   · 排队超过 MOSS_QUEUE_WAIT 秒直接 503，而不是把连接堆到 daemon 的 backlog 里。
+N_DAEMONS = max(1, int(os.environ.get("MOSS_DAEMONS", "1")))
+
+
+def _daemon_sock(i: int) -> str:
+    """池里第 i 个 daemon 的 socket（0 号沿用 MOSS_DAEMON_SOCK，其余 serve-<i>.sock）。"""
+    if i == 0:
+        return DAEMON_SOCK
+    return f"{os.path.dirname(DAEMON_SOCK)}/serve-{i}.sock"
+
+
 _QUEUE_MAX = int(os.environ.get("MOSS_QUEUE_MAX", "8"))
 _QUEUE_WAIT = float(os.environ.get("MOSS_QUEUE_WAIT", "60"))
-_SLOT = asyncio.Semaphore(1)
+_FREE: "asyncio.Queue[int]" = asyncio.Queue()
+for _i in range(N_DAEMONS):
+    _FREE.put_nowait(_i)
 _QUEUE = 0
 _INFLIGHT = 0          # 正在跑（持有 slot）的请求数
 _STAT = {"queue_full": 0, "queue_timeout": 0, "ok": 0}
@@ -517,6 +529,7 @@ class _DaemonSlot:
 
     def __init__(self) -> None:
         self.held = False
+        self.index = -1
 
     async def acquire(self) -> None:
         global _QUEUE, _INFLIGHT
@@ -527,7 +540,7 @@ class _DaemonSlot:
                                 headers={"Retry-After": "2"})
         _QUEUE += 1
         try:
-            await asyncio.wait_for(_SLOT.acquire(), _QUEUE_WAIT)
+            self.index = await asyncio.wait_for(_FREE.get(), _QUEUE_WAIT)
             self.held = True
             _INFLIGHT += 1
         except asyncio.TimeoutError:
@@ -544,7 +557,7 @@ class _DaemonSlot:
             self.held = False
             _INFLIGHT -= 1
             _STAT["ok"] += 1
-            _SLOT.release()
+            _FREE.put_nowait(self.index)
 
 
 class AsyncDaemonStream:
@@ -567,7 +580,7 @@ class AsyncDaemonStream:
         slot = _DaemonSlot()
         await slot.acquire()
         try:
-            reader, writer = await asyncio.open_unix_connection(DAEMON_SOCK)
+            reader, writer = await asyncio.open_unix_connection(_daemon_sock(slot.index))
         except OSError as e:
             slot.release()
             raise HTTPException(503, f"连接常驻 daemon 失败：{e}")
@@ -764,7 +777,7 @@ def _daemon_tokens_sync(text: str) -> int:
 
 async def _daemon_tokens(text: str) -> int:
     # daemon 正忙（有请求在跑）时不排队等分词——直接走字数兜底，别给请求加延迟
-    if _SLOT.locked():
+    if _FREE.empty():
         raise RuntimeError("daemon busy")
     return await asyncio.to_thread(_daemon_tokens_sync, text)
 
@@ -1125,6 +1138,8 @@ async def health():
         "voices_with_codes": [v["id"] for v in _list_voices() if v.get("codes")],
         "daemon": {"socket": DAEMON_SOCK, "online": daemon_ok},
         "synth_mode": SYNTH_MODE,
+        "daemons": {"count": N_DAEMONS, "free": _FREE.qsize(),
+                    "sockets": [_daemon_sock(i) for i in range(N_DAEMONS)]},
         "queue": {"max": _QUEUE_MAX, "wait_sec": _QUEUE_WAIT,
                   "inflight": _INFLIGHT, "waiting": _QUEUE,
                   "rejected": dict(_STAT)},
