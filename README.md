@@ -41,6 +41,11 @@ moss_tts_audio_encoder_f16.gguf           # 只在注册新音色时用到
 > 官方发布的 `MOSS_TTS_Q4_K_M.gguf` 是 **`qwen3` 架构**、把 embedding/heads 拆成 `.npy`，
 > 本 fork **不能直接用**：能加载，但生成的 codes 全是 pad，输出只有零点几秒。
 
+#### 直接下载（推荐）
+
+转换好的权重已发布：**https://huggingface.co/thaut/moss-tts-windowed-gguf**
+（backbone + encoder + decoder 三个文件，放一起即可）。
+
 #### 自己转换
 
 也可以在本地从 HuggingFace 权重生成（CPU 转换，不需要 GPU）：

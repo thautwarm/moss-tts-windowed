@@ -97,8 +97,8 @@ for f in sorted(glob.glob("/gguf/*firstclass_f16.gguf")):
 #    tensor-type 的名字是 std::regex_search 匹配，且 -- 选项必须写在位置参数**之前**。
 if [ ! -s "$Q4" ]; then
   step "quantize -> $QUANT + 音频表 Q8_0"
-  docker run --rm --gpus all -v "$GGUF":/gguf "$QUANT_IMAGE" \
-    llama-quantize \
+  # 应用镜像有 ENTRYPOINT（/app/entrypoint.sh），必须显式 --entrypoint，否则跑的是服务
+  docker run --rm --gpus all -v "$GGUF":/gguf --entrypoint llama-quantize "$QUANT_IMAGE" \
       --tensor-type 'output_audio=q8_0' \
       --tensor-type 'token_embd_audio=q8_0' \
       "/gguf/$(basename "$F16")" "/gguf/$(basename "$Q4")" "$QUANT"
