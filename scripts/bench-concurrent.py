@@ -80,10 +80,16 @@ def main() -> None:
 
         totals.append(total)
         firsts.append(min(f for f, _, _ in results))
-        print("round %d: 总墙钟 %.2fs | 单请求 %.2fs | 首字节(最快) %.2fs | %d 字节"
+        # opus 80 kbps → 音频秒数 ≈ 字节 / 10000
+        # opus 80 kbps → 音频秒数 ≈ 字节 / 10000；RTF = 生成耗时 / 音频时长（<1 = 比实时快）
+        audio = [n / 10000.0 for _, _, n in results]
+        rtfs = [t / a for (_, t, _), a in zip(results, audio)]
+        print("round %d: 总墙钟 %.2fs | 单请求 %.2fs | RTF 中位 %.3f（最差 %.3f，即 %.1f× 实时）"
+              " | 首字节 %.2fs | 音频 %.1fs/请求"
               % (rnd + 1, total,
                  statistics.median([t for _, t, _ in results]),
-                 firsts[-1], sum(n for _, _, n in results)))
+                 statistics.median(rtfs), max(rtfs), 1.0 / max(rtfs),
+                 firsts[-1], statistics.median(audio)))
 
     print("\nK=%d chars=%d voice=%s → 总墙钟中位 %.2fs，首字节中位 %.2fs"
           % (args.k, args.chars, voice, statistics.median(totals), statistics.median(firsts)))
