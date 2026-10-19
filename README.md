@@ -29,7 +29,11 @@
 
 ### 模型文件
 
-放在宿主某个目录，挂载到容器 `/models`：
+```bash
+./scripts/fetch-models.sh        # 从 HuggingFace 下载（推荐）
+```
+
+三个文件放在宿主某个目录（默认 `./models`），挂载到容器 `/models`：
 
 ```
 moss_tts_v15_firstclass_q4_k_m_aq8.gguf   # backbone（约 4.6 GB）
@@ -43,8 +47,16 @@ moss_tts_audio_encoder_f16.gguf           # 只在注册新音色时用到
 
 #### 直接下载（推荐）
 
-转换好的权重已发布：**https://huggingface.co/thaut/moss-tts-windowed-gguf**
-（backbone + encoder + decoder 三个文件，放一起即可）。
+```bash
+./scripts/fetch-models.sh
+```
+
+从 **https://huggingface.co/thaut/moss-tts-windowed-gguf** 拉三个文件（带 sha256 校验，已存在会跳过）。
+国内网络可以走镜像：
+
+```bash
+HF_ENDPOINT=https://hf-mirror.com ./scripts/fetch-models.sh
+```
 
 #### 自己转换
 
