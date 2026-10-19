@@ -82,12 +82,16 @@ git clone <repo> moss-tts-windowed && cd moss-tts-windowed
 
 只需要改 `server.py` / 补丁时，重复后两步即可。
 
-**显卡架构**：默认按 Blackwell（`CUDA_ARCH=120`，RTX 50 系）编译。其它卡请显式指定：
+**显卡架构**：`build-llama.sh` 会用 `nvidia-smi --query-gpu=compute_cap` **自动探测**。
+探测不到时可以显式指定，否则默认 120：
 
 ```bash
+CUDA_ARCH=86 ./scripts/build-llama.sh    # A6000 / RTX 30 系
 CUDA_ARCH=89 ./scripts/build-llama.sh    # RTX 40 系
-CUDA_ARCH=86 ./scripts/build-llama.sh    # RTX 30 系
 ```
+
+⚠️ 架构选错的典型表现：服务能起、但第一次合成报
+`CUDA error: no kernel image is available for execution on the device`。
 
 ---
 

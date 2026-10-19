@@ -14,7 +14,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UP="$ROOT/upstream/llama.cpp"
 WORK="$ROOT/build"
 TOOLCHAIN="${TOOLCHAIN_IMAGE:-moss-tts-toolchain:cu128}"
-CUDA_ARCH="${CUDA_ARCH:-120}"   # 12.0 = Blackwell(RTX 50xx)；4090=89 / 3090=86
+# CUDA 架构：默认从 nvidia-smi 自动探测（如 8.6 -> 86），探测不到才退回 120。
+# 也可以显式指定：CUDA_ARCH=86 ./scripts/build-llama.sh
+if [ -z "${CUDA_ARCH:-}" ]; then
+  CUDA_ARCH="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null \
+               | head -1 | tr -d '.')"
+fi
+CUDA_ARCH="${CUDA_ARCH:-120}"
 JOBS="${JOBS:-$(nproc)}"
 
 [ -d "$UP" ] || { echo "缺少 upstream/llama.cpp，先跑 scripts/fetch-llama-cpp.sh" >&2; exit 1; }
