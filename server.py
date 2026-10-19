@@ -183,10 +183,10 @@ class ChunkStreamRequest(BaseModel):
     """POST /v1/audio/speech/stream 的请求：**只有这 5 个字段**。
 
     语言、采样参数、token 预算、分帧方式都是服务端默认（env 可改，不动契约）。
-    extra="forbid"：多给字段直接 422，不静默忽略。
+    多给的字段**静默忽略**（extra="ignore"），方便客户端复用别的 TTS 的请求体。
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     prompt: str = Field(..., min_length=1, max_length=100000, description="要合成的文本（上限 2048 字）")
     voice: str = Field(default="default", description="已注册音色 id；default = 无参考")
@@ -1024,6 +1024,7 @@ async def health():
         "stream": {
             "path": "/v1/audio/speech/stream",
             "request": ["prompt", "voice", "seed", "audio_format"],
+            "extra_fields": "ignored",
             "default": {"voice": "default", "seed": -1, "audio_format": "wav"},
             "server_defaults": {"language": STREAM_LANGUAGE, "max_new_tokens": STREAM_MNT,
                                 "temperature": STREAM_TEMP, "top_p": STREAM_TOP_P,

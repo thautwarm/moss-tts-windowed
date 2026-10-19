@@ -136,7 +136,7 @@ curl -X DELETE http://127.0.0.1:6677/api/v1/voices/alice
 
 ### 4.2 流式合成（推荐）
 
-`POST /v1/audio/speech/stream`，**只接受 4 个字段**，多个字段会 422：
+`POST /v1/audio/speech/stream` 使用 4 个字段；**多给的字段会被忽略**（不报错），方便复用别家客户端的请求体：
 
 ```jsonc
 {
