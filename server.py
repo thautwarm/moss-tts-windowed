@@ -418,12 +418,19 @@ def _check_model_files() -> list[str]:
 # ── msgpack（够用就好：map / str / bin / int / float / bool / nil / array）───
 # 只用标准编码，客户端拿任意 msgpack 解码器都能读；不引依赖 = 不动镜像构建。
 
+def _sanitize_text(text: str) -> str:
+    """协议是**按行**的（`\n` 结尾、`\t` 分列）：文本里的换行/制表符会把请求截断，
+    后半段会被 daemon 当成新请求（没有 --reference-codes → 静默用默认音色）。
+    这里把空白类字符压成单个空格。"""
+    return " ".join(text.split())
+
+
 def _daemon_args(text: str, ref_codes: Optional[Path], language: str, max_new_tokens: int,
                  seed: int, temperature: float, top_p: float, top_k: float,
                  repetition_penalty: float, overlap: Optional[int] = None,
                  lookahead: Optional[int] = None, window: Optional[int] = None,
                  duration_tokens: Optional[int] = None) -> list[str]:
-    args = ["--text", text, "--language", language,
+    args = ["--text", _sanitize_text(text), "--language", language,
             "--max-new-tokens", str(max_new_tokens),
             "--audio-temperature", str(temperature),
             "--audio-top-p", str(top_p),
