@@ -1,0 +1,17 @@
+--- a/tools/tts/run-moss-tts-delay.cpp
++++ b/tools/tts/run-moss-tts-delay.cpp
+@@ -3106,11 +3106,13 @@
+         const auto t0 = std::chrono::steady_clock::now();
+         int rc = EXIT_FAILURE;
+         std::string err;
++        // patch 0011：标志必须每个请求都复位 —— AR 循环是无条件检查它的，
++        // 否则一个被中断的流式请求会把后续（整段）请求全部毒死（0 帧 → 500）。
++        g_moss_stream_aborted = false;
+         if (streaming) {
+             g_moss_stream_fd          = cfd;
+             g_moss_stream_emitted     = 0;
+             g_moss_stream_header_sent = false;
+-            g_moss_stream_aborted     = false;   // patch 0005
+         }
+         try {
+             rc = moss_cli_main(static_cast<int>(cargs.size()), cargs.data());

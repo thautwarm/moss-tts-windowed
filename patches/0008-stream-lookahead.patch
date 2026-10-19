@@ -1,0 +1,71 @@
+--- a/tools/tts/run-moss-tts-delay.cpp
++++ b/tools/tts/run-moss-tts-delay.cpp
+@@ -251,7 +251,8 @@
+ static bool     g_moss_stream_header_sent    = false;
+ static bool     g_moss_stream_aborted        = false;  // 客户端断开 -> 让生成循环尽早收手
+ static uint32_t g_moss_stream_window         = 12;   // 每块推进的帧数（≈0.96 s）
+-static uint32_t g_moss_stream_overlap        = 12;   // 每侧上下文帧数（≈0.96 s）
++static uint32_t g_moss_stream_overlap        = 12;   // 左侧上下文帧数（≈0.96 s）
++static uint32_t g_moss_stream_lookahead      = 0;    // patch 0008：右侧前瞻帧数（0 = 有多少用多少，零等待）
+ static long long g_moss_serve_max_new_tokens = 448;  // 非流式整段解码上限（0 = 不限）
+ static uint32_t g_moss_prefill_ubatch       = 384;  // patch 0006：prefill 每批 token 上限（0 = 不分块）
+ static uint32_t g_moss_prefill_budget_mib  = 1000;  // patch 0006：pp buffer 显存预算（MiB）
+@@ -1635,16 +1636,19 @@
+         return;
+     }
+     const size_t   O = g_moss_stream_overlap;
++    const size_t   L = g_moss_stream_lookahead;
+     const uint32_t W = g_moss_stream_window;
+-    moss_stream_decoder_init(decoder_path, n_gpu_layers, cfg, (size_t) W + 3 * O + 16);
++    // patch 0008：emit_range 里 O 用在**左右两侧**，窗口最大 W + 2*O；ctx 必须装得下它。
++    moss_stream_decoder_init(decoder_path, n_gpu_layers, cfg, (size_t) W + 2 * O + 16);
+     moss_stream_send_header();
+ 
+     const moss_generation_audio now = moss_decode_generation_audio(state, prompt_frames, cfg);
+-    // 右侧留 O 帧：只有「后面还有 O 帧」的部分才是真正定稿的，这样每帧吐出去时左右都有上下文
+-    if (now.raw_frames <= O) {
++    // patch 0008：只等 lookahead 帧（默认 0 = 不等）。
++    // 右侧上下文由 emit_range 夹在 raw_frames 以内 —— 有多少用多少。
++    if (now.raw_frames <= L) {
+         return;
+     }
+-    const size_t stable_end = now.raw_frames - O;
++    const size_t stable_end = now.raw_frames - L;
+ 
+     while (g_moss_stream_emitted + W <= stable_end) {
+         const size_t emit_from = g_moss_stream_emitted;
+@@ -1668,8 +1672,9 @@
+         return;
+     }
+     const size_t   O = g_moss_stream_overlap;
++    const size_t   L = g_moss_stream_lookahead;
+     const uint32_t W = g_moss_stream_window;
+-    moss_stream_decoder_init(decoder_path, n_gpu_layers, cfg, (size_t) W + 3 * O + 16);
++    moss_stream_decoder_init(decoder_path, n_gpu_layers, cfg, (size_t) W + 2 * O + 16);
+     moss_stream_send_header();
+ 
+     const moss_generation_audio now = moss_decode_generation_audio(state, prompt_frames, cfg);
+@@ -3125,6 +3130,11 @@
+             g_moss_stream_overlap = (uint32_t) std::strtoul(argv[++i], nullptr, 10);
+             continue;
+         }
++        if (arg == "--serve-stream-lookahead" && i + 1 < argc) {
++            // patch 0008：右侧前瞻帧数（0 = 有多少用多少）
++            g_moss_stream_lookahead = (uint32_t) std::strtoul(argv[++i], nullptr, 10);
++            continue;
++        }
+         if (arg == "--serve-ubatch" && i + 1 < argc) {
+             // patch 0006：prefill 单批 token 上限（0 = 不分块，退回旧行为）
+             g_moss_prefill_ubatch = (uint32_t) std::strtoul(argv[++i], nullptr, 10);
+@@ -3241,6 +3251,11 @@
+             g_moss_stream_overlap = (uint32_t) std::strtoul(argv[++i], nullptr, 10);
+             continue;
+         }
++        if (arg == "--stream-lookahead" && i + 1 < argc) {
++            // patch 0008：右侧前瞻帧数（0 = 有多少用多少）
++            g_moss_stream_lookahead = (uint32_t) std::strtoul(argv[++i], nullptr, 10);
++            continue;
++        }
+         if (arg == "--seed" && i + 1 < argc) {
+             seed = (uint32_t) std::stoul(argv[++i]);
+             continue;

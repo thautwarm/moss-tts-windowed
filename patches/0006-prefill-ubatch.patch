@@ -1,0 +1,63 @@
+--- a/tools/tts/run-moss-tts-delay.cpp
++++ b/tools/tts/run-moss-tts-delay.cpp
+@@ -252,6 +252,32 @@
+ static uint32_t g_moss_stream_window         = 12;   // 每块推进的帧数（≈0.96 s）
+ static uint32_t g_moss_stream_overlap        = 12;   // 每侧上下文帧数（≈0.96 s）
+ static long long g_moss_serve_max_new_tokens = 448;  // 非流式整段解码上限（0 = 不限）
++static uint32_t g_moss_prefill_ubatch       = 384;  // patch 0006：prefill 每批 token 上限（0 = 不分块）
++static uint32_t g_moss_prefill_budget_mib  = 1000;  // patch 0006：pp buffer 显存预算（MiB）
++
++// patch 0006：按 n_ctx 估算 KV，剩下多少显存就切多大一批 prefill。
++// 常数是这台机器实测出来的（36 层 f16 KV、Q4_K_M 骨干、8 GB 显卡）：
++//   KV    ≈ 0.1406 MiB / cell（实测 396 MiB / 2816 cells）
++//   pp    ≈ 2.2 MiB / token（实测 1099.53 MiB / 508 tokens）
++//   预算  ≈ 1400 MiB（总 8151 - 常驻 6531 = 1620，留 ~220 余量）
++// prompt ≤ ubatch 时仍是**单批**，与打补丁前逐字节一致（保住 md5 基线）。
++static uint32_t moss_auto_ubatch(uint32_t n_batch, uint32_t n_ctx) {
++    if (g_moss_prefill_ubatch == 0) {
++        return n_batch;
++    }
++    uint32_t cap = g_moss_prefill_ubatch;
++
++    const double kv_mib = (double) n_ctx * 0.1406;
++    const double room   = (double) g_moss_prefill_budget_mib - kv_mib;
++    const uint32_t by_mem = room > 0.0 ? (uint32_t) (room / 2.2) : 0u;
++    if (by_mem < cap) {
++        cap = by_mem;
++    }
++    if (cap < 64u) {
++        cap = 64u;   // 再小也没意义：llama.cpp 单批至少要能跑起来
++    }
++    return std::max<uint32_t>(std::min<uint32_t>(n_batch, cap), 1u);
++}
+ 
+ static void moss_stream_pump(
+         const moss_delay_state & state,
+@@ -2231,7 +2257,9 @@
+         llama_context_params cparams = llama_context_default_params();
+         cparams.n_ctx = std::max<uint32_t>((uint32_t) prompt_frames + (uint32_t) max_new_tokens + 8u, 64u);
+         cparams.n_batch = std::max<uint32_t>((uint32_t) prompt_frames, 1u);
+-        cparams.n_ubatch = cparams.n_batch;
++        // patch 0006：pp compute buffer 的大小 ∝ n_ubatch（实测 508 token ≈ 1099 MiB）。
++        // 一次性 prefill 整个 prompt 会在 8 GB 卡上 cudaMalloc 失败，所以按显存预算分块。
++        cparams.n_ubatch = moss_auto_ubatch(cparams.n_batch, cparams.n_ctx);
+         cparams.n_seq_max = 1;
+         cparams.embeddings = false;
+ 
+@@ -3092,6 +3120,16 @@
+             g_moss_stream_overlap = (uint32_t) std::strtoul(argv[++i], nullptr, 10);
+             continue;
+         }
++        if (arg == "--serve-ubatch" && i + 1 < argc) {
++            // patch 0006：prefill 单批 token 上限（0 = 不分块，退回旧行为）
++            g_moss_prefill_ubatch = (uint32_t) std::strtoul(argv[++i], nullptr, 10);
++            continue;
++        }
++        if (arg == "--serve-ubatch-budget" && i + 1 < argc) {
++            // patch 0006：pp buffer 可用的显存预算（MiB）
++            g_moss_prefill_budget_mib = (uint32_t) std::strtoul(argv[++i], nullptr, 10);
++            continue;
++        }
+         user_args.push_back(arg);
+     }
+ 

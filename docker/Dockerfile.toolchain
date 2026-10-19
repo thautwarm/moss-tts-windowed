@@ -1,0 +1,33 @@
+# 底包 A：编译工具链（构建一次，之后只在换 CUDA / 工具链版本时才重建）
+#
+# 这一层是「一辈子只该做一次」的东西：CUDA devel + 编译器等。
+# 它跟我们的迭代（patches/）完全无关，所以必须和应用源码分层，不能串在一条链上。
+FROM nvidia/cuda:12.8.2-devel-ubuntu24.04
+
+# build 期代理：daemon 的 systemd 代理只对 docker pull 生效，build 不继承（见 README）
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential cmake git patch ccache ca-certificates libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ⚠️ CUDA driver stub 必须进链接搜索路径，否则 libggml-cuda.so 不带
+#    DT_NEEDED libcuda.so.1，链接可执行文件时报 undefined reference to
+#    cuMemSetAccess / cuDeviceGet / ...
+ENV LIBRARY_PATH=/usr/local/cuda/lib64/stubs:/usr/local/cuda/lib64
+
+# ccache：改 1 个文件时，其余目标文件全部命中缓存，145s 的全量编译降到十几秒。
+# 缓存目录由宿主挂载（build-llama.sh 里 -v ccache:/ccache），因此跨 docker run 持久。
+ENV CCACHE_DIR=/ccache \
+    CCACHE_MAXSIZE=20G \
+    CMAKE_C_COMPILER_LAUNCHER=ccache \
+    CMAKE_CXX_COMPILER_LAUNCHER=ccache \
+    CMAKE_CUDA_COMPILER_LAUNCHER=ccache
+
+# 编译用的目标架构在 build-llama.sh 里以 -DCMAKE_CUDA_ARCHITECTURES 传入
+# （宿主 nvcc 是 12.0，编不了 sm_120，所以一律在本镜像内编）

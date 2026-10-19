@@ -1,0 +1,54 @@
+# moss-tts-windowed —— 常驻 daemon + 契约前端的 MOSS-TTS v1.5
+#
+# 容器内监听 8080，宿主映射到 TTSPORT（默认 6677）。
+# 如果 6677 已被其它服务占用，先停掉它再起这个。
+services:
+  moss-tts-windowed:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: stack-moss-tts-windowed:latest
+    container_name: stack-moss-tts-windowed
+    restart: always
+    # 容器里有两个进程（daemon 守护循环 + uvicorn），PID 1 交给 init 收尸
+    init: true
+    # 以宿主用户跑：容器往 voices/、run/ 写的文件属主才正确，
+    # 宿主也能直接连 /run/moss/serve.sock 调试（CUDA 在非 root 下实测正常）
+    user: "1000:1000"
+    ports:
+      - "${TTSPORT:-6677}:8080"
+    volumes:
+      - ${MOSS_MODELS_HOST:-./models}:/models:ro
+      - ./voices:/voices
+      - ./static:/app/static:ro
+      # daemon 的 unix socket：挂出来，宿主也能直接连（调试/压测用）
+      - ./run:/run/moss
+      - ./logs:/var/log/moss
+    # 采样参数/窗口/端口等全部收口到 .env（改 .env + up -d 生效）
+    env_file:
+      - .env
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+      - MOSS_MODELS_DIR=/models
+      - MOSS_VOICES_DIR=/voices
+      - MOSS_DAEMON_SOCK=/run/moss/serve.sock
+      - MOSS_NGL=-1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    # 常驻模型加载 + 首次注册 codes 都要时间，start_period 给足
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"

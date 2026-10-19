@@ -1,0 +1,51 @@
+--- a/tools/tts/run-moss-tts-delay.cpp
++++ b/tools/tts/run-moss-tts-delay.cpp
+@@ -12,6 +12,7 @@
+ #include <cstdlib>
+ #include <cstring>
+ #include <csignal>
++#include <poll.h>
+ #include <fstream>
+ #include <limits>
+ #include <numeric>
+@@ -253,6 +254,30 @@
+ static uint32_t g_moss_stream_window         = 12;   // 每块推进的帧数（≈0.96 s）
+ static uint32_t g_moss_stream_overlap        = 12;   // 左侧上下文帧数（≈0.96 s）
+ static uint32_t g_moss_stream_lookahead      = 0;    // patch 0008：右侧前瞻帧数（0 = 有多少用多少，零等待）
++
++// patch 0012：逐帧探测客户端是否已断开（poll 不读数据，只是查 socket 事件）
++static bool moss_stream_client_gone() {
++    if (g_moss_stream_fd < 0) {
++        return false;
++    }
++    struct pollfd pfd;
++    pfd.fd      = g_moss_stream_fd;
++    pfd.events  = POLLIN;
++    pfd.revents = 0;
++    if (::poll(&pfd, 1, 0) <= 0) {
++        return false;
++    }
++#ifdef POLLRDHUP
++    if (pfd.revents & POLLRDHUP) {
++        return true;
++    }
++#endif
++    if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) {
++        return true;
++    }
++    // 协议是"请求发完就不再发"，所以对端可读 = 已经 EOF
++    return (pfd.revents & POLLIN) != 0;
++}
+ static long long g_moss_serve_max_new_tokens = 448;  // 非流式整段解码上限（0 = 不限）
+ static uint32_t g_moss_prefill_ubatch       = 384;  // patch 0006：prefill 每批 token 上限（0 = 不分块）
+ static uint32_t g_moss_prefill_budget_mib  = 1000;  // patch 0006：pp buffer 显存预算（MiB）
+@@ -2402,6 +2427,9 @@
+             if (g_moss_stream_fd >= 0 && (step + 1) % (int32_t) g_moss_stream_window == 0) {
+                 moss_stream_pump(state, prompt_frames, cfg, audio_decoder_model_path, n_gpu_layers);
+             }
++            if (!g_moss_stream_aborted && moss_stream_client_gone()) {   // patch 0012
++                g_moss_stream_aborted = true;
++            }
+             if (g_moss_stream_aborted) {
+                 LOG("stream: 客户端已断开，提前结束生成（已跑 %d 步）\n", step + 1);
+                 break;

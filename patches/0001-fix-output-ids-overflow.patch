@@ -1,0 +1,21 @@
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -2002,8 +2002,16 @@
+         backend_token_count = (1 + n_vocab) * n_outputs_max;    // sampled + candidates
+     }
+ 
+-    if (output_ids.size() < (size_t) n_outputs_max) {
+-        output_ids.resize(n_outputs_max);
++    // output_ids 是按「batch 内 token 下标」索引的（见本文件下方 `output_ids[out_id] = i`），
++    // 因此容量必须 >= n_batch（batch 的 token 数），只按 n_outputs_max 分配会越界写：
++    // prefill 时只有一个 token 要 logits（n_outputs_max == 1），但它的下标是 n_frames-1，
++    // 于是 output_ids[n_frames-1] 写到了分配区之外 → 堆被写坏 → 稍后 free() 报
++    // "invalid next size" 而 abort。
++    // 上游原本是 `output_ids.resize(n_batch)`；这里取两者较大值，既保证下标范围，
++    // 又保留「随 n_outputs_max 增长」的意图。
++    const size_t n_output_ids = std::max<size_t>((size_t) cparams.n_batch, (size_t) n_outputs_max);
++    if (output_ids.size() < n_output_ids) {
++        output_ids.resize(n_output_ids);
+     }
+ 
+     const size_t prev_size = buf_output ? ggml_backend_buffer_get_size(buf_output.get()) : 0;

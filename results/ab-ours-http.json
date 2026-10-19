@@ -1,0 +1,85 @@
+{
+  "mode": "http",
+  "runs": [
+    {
+      "tag": "long-cold",
+      "rc": 200,
+      "wall_ms": 8390.0,
+      "audio_s": 38.32,
+      "rtf": 0.219,
+      "bytes": 1839404
+    },
+    {
+      "tag": "short-cold",
+      "rc": 200,
+      "wall_ms": 1467.3,
+      "audio_s": 4.32,
+      "rtf": 0.34,
+      "bytes": 207404
+    },
+    {
+      "tag": "long-warm-0",
+      "rc": 200,
+      "wall_ms": 8387.8,
+      "audio_s": 38.48,
+      "rtf": 0.218,
+      "bytes": 1847084
+    },
+    {
+      "tag": "long-warm-1",
+      "rc": 200,
+      "wall_ms": 8356.1,
+      "audio_s": 37.76,
+      "rtf": 0.221,
+      "bytes": 1812524
+    },
+    {
+      "tag": "long-warm-2",
+      "rc": 200,
+      "wall_ms": 7606.6,
+      "audio_s": 34.72,
+      "rtf": 0.219,
+      "bytes": 1666604
+    },
+    {
+      "tag": "long-warm-3",
+      "rc": 200,
+      "wall_ms": 8365.0,
+      "audio_s": 38.48,
+      "rtf": 0.217,
+      "bytes": 1847084
+    },
+    {
+      "tag": "short-warm-0",
+      "rc": 200,
+      "wall_ms": 1620.1,
+      "audio_s": 4.96,
+      "rtf": 0.327,
+      "bytes": 238124
+    },
+    {
+      "tag": "short-warm-1",
+      "rc": 200,
+      "wall_ms": 1466.3,
+      "audio_s": 4.32,
+      "rtf": 0.339,
+      "bytes": 207404
+    },
+    {
+      "tag": "short-warm-2",
+      "rc": 200,
+      "wall_ms": 1352.4,
+      "audio_s": 3.68,
+      "rtf": 0.367,
+      "bytes": 176684
+    },
+    {
+      "tag": "short-warm-3",
+      "rc": 200,
+      "wall_ms": 1465.0,
+      "audio_s": 4.48,
+      "rtf": 0.327,
+      "bytes": 215084
+    }
+  ]
+}

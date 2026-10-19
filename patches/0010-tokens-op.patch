@@ -1,0 +1,65 @@
+--- a/tools/tts/run-moss-tts-delay.cpp
++++ b/tools/tts/run-moss-tts-delay.cpp
+@@ -261,6 +261,10 @@
+ static uint32_t g_moss_ctx_rows        = 6000;   // ctx 行数上限（≈1.34 GB KV）
+ static uint32_t g_moss_ctx_keep_recent = 2048;   // 滑窗时保留的最近音频行数
+ static std::vector<float> g_moss_frame_rms;      // 每个 raw 帧的能量（流式解码时记录）
++
++// patch 0010：精确分词（常驻词表，vocab_only，不占显存）
++static std::string        g_moss_vocab_model_path;
++static const llama_vocab * g_moss_vocab = nullptr;
+ 
+ // patch 0009：在目标点附近挑能量最低的帧作为切点
+ static size_t moss_pick_cut(size_t target, size_t pinned, size_t pos) {
+@@ -2994,6 +2998,39 @@
+             }
+         }
+ 
++        // patch 0010：TOKENS\t<text> -> OK <token 数>
++        if (body.rfind("TOKENS\t", 0) == 0) {
++            const std::string text = body.substr(7);
++            const auto t0 = std::chrono::steady_clock::now();
++            std::string resp;
++            try {
++                if (g_moss_vocab == nullptr) {
++                    if (g_moss_vocab_model_path.empty()) {
++                        throw std::runtime_error("TOKENS: 没有 --serve-vocab-model");
++                    }
++                    llama_model_params mp = llama_model_default_params();
++                    mp.vocab_only = true;
++                    mp.use_mmap   = true;
++                    llama_model * m = moss_get_or_load_resident_model(g_moss_vocab_model_path, mp);
++                    if (m == nullptr) {
++                        throw std::runtime_error("TOKENS: 词表模型加载失败");
++                    }
++                    g_moss_vocab = llama_model_get_vocab(m);
++                }
++                const std::vector<llama_token> ids = common_tokenize(g_moss_vocab, text, false, true);
++                const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
++                        std::chrono::steady_clock::now() - t0).count();
++                (void) ms;
++                resp = "OK " + std::to_string(ids.size()) + "\n";
++            } catch (const std::exception & e) {
++                resp = std::string("ERR 0 ") + e.what() + "\n";
++            }
++            if (!moss_write_all(cfd, resp)) {
++                break;
++            }
++            continue;
++        }
++
+         // patch 0005：CODES\t<backbone.gguf>\t<encoder.gguf>\t<ref.wav>\t<out.codes.bin>
+         // 参考音频 -> codes（注册音色用）。复用现成 CLI 路径但强制 -ngl 0（纯 CPU）：
+         // 不起新进程、不重复加载权重、不占显存（常驻对已经吃掉 6.5~7.7 GB）。
+@@ -3232,6 +3269,11 @@
+             g_moss_ctx_keep_recent = (uint32_t) std::strtoul(argv[++i], nullptr, 10);
+             continue;
+         }
++        if (arg == "--serve-vocab-model" && i + 1 < argc) {
++            // patch 0010：TOKENS op 用的词表模型（通常就是 -m 那个文件）
++            g_moss_vocab_model_path = argv[++i];
++            continue;
++        }
+         user_args.push_back(arg);
+     }
+ 

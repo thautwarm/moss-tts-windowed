@@ -1,0 +1,32 @@
+# 底包 B：运行时依赖（构建一次，之后只在改依赖清单时才重建）
+#
+# 这一层同样是「一辈子只该做一次」：系统包（含拖一堆依赖的 ffmpeg）+ Python 依赖。
+# 它跟编译产物、应用代码都无关，所以不能待在它们的下游 ——
+# 之前的 Dockerfile 把 pip install 放在 COPY --from=build 之后，
+# 导致每次重编 llama.cpp 都要重装一遍 fastapi/uvicorn（77s 白跑）。
+FROM nvidia/cuda:12.8.2-runtime-ubuntu24.04
+
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
+
+# 音频转码用参考实现 CLI，而不是 ffmpeg：
+#   lame      -> mp3（libmp3lame）
+#   opusenc   -> Ogg Opus（libopus）
+# 同码率下质量与 ffmpeg 相同（底层就是同一批库），但：
+#   启动开销 0-1ms vs ffmpeg 27ms（ffmpeg 要初始化全部编解码器）
+#   安装 3.8s / 5 个包 / ~1MB  vs  ffmpeg 556s / 104+ 个包 / ~400MB
+# 顺带一提：OpenAI 自己返回的 opus 也是 opusenc 编的（ffprobe 里能看到
+# "ENCODER : opusenc from opus-tools"）。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libgomp1 python3 python3-venv curl ca-certificates lame opus-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir \
+         "fastapi>=0.115" "uvicorn[standard]>=0.30" "python-multipart>=0.0.9"
+
+ENV PATH=/opt/venv/bin:$PATH

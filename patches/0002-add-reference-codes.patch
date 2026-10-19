@@ -1,0 +1,246 @@
+--- a/tools/tts/run-moss-tts-delay.cpp	2026-04-08 13:06:34.000000000 +0800
++++ b/tools/tts/run-moss-tts-delay.cpp	2026-10-01 03:13:39.330618284 +0800
+@@ -37,7 +37,7 @@
+ constexpr int64_t MOSS_DELAY_INT64_MAX = std::numeric_limits<int64_t>::max();
+ constexpr float MOSS_NEG_INF = -std::numeric_limits<float>::infinity();
+ constexpr uint32_t MOSS_CODES_MAGIC = 0x53444f43; // "CODS"
+-constexpr uint32_t MOSS_CODES_VERSION = 1;
++constexpr uint32_t MOSS_CODES_VERSION = 2;        // v2: header 增加来源音频指纹
+ constexpr uint32_t MOSS_DECODE_REF_MAGIC = 0x4652444d; // "MDRF"
+ constexpr uint32_t MOSS_DECODE_REF_VERSION = 1;
+ constexpr uint32_t MOSS_GEN_REF_MAGIC = 0x4652474d; // "MGRF"
+@@ -157,6 +157,10 @@
+     uint32_t version = MOSS_CODES_VERSION;
+     uint32_t n_frames = 0;
+     uint32_t n_vq = 0;
++    // 来源音频的 FNV-1a 64 指纹。0 = 未知（例如 --dump-raw-codes 导出的是生成结果，
++    // 没有来源音频）。给 --reference-codes 用时，若同时提供了 --reference-audio，
++    // 就比对指纹；不一致说明这个 codes 不属于这份参考音频，直接拒绝使用。
++    uint64_t source_fingerprint = 0;
+ };
+ 
+ struct moss_decode_ref_header {
+@@ -249,6 +253,8 @@
+         const std::string & text,
+         const std::string & language,
+         const std::string & reference_audio_path,
++        const std::string & reference_codes_path,
++        const std::string & dump_reference_codes_path,
+         int32_t n_gpu_layers,
+         int32_t max_new_tokens,
+         const moss_sampling_config & sampling_cfg,
+@@ -355,6 +361,8 @@
+     LOG("\noptions:\n");
+     LOG("  -ngl, --gpu-layers, --n-gpu-layers N  number of layers to offload to GPU (default: -1)\n");
+     LOG("  --audio-encoder-model PATH            native moss-tts-audio-encoder GGUF for reference wav -> codes\n");
++    LOG("  --reference-codes PATH                precomputed reference codes (from --dump-reference-codes); skips the audio encoder entirely\n");
++    LOG("  --dump-reference-codes PATH           write the reference codes produced from --reference-audio (for offline precompute)\n");
+     LOG("  --audio-decoder-model PATH            native moss-tts-audio-decoder GGUF for codes -> wav\n");
+     LOG("\n");
+ }
+@@ -1127,11 +1135,32 @@
+     return out;
+ }
+ 
++// FNV-1a 64 指纹：标注 codes 文件的来源音频，用于检出「codes 与参考音频张冠李戴」。
++// （不是密码学哈希 —— 这里防的是误用/串台，不是恶意伪造。）
++static uint64_t moss_fingerprint_file(const std::string & path) {
++    std::ifstream in(path, std::ios::binary);
++    if (!in) {
++        throw std::runtime_error("failed to open for fingerprint: " + path);
++    }
++    uint64_t h = 1469598103934665603ULL;
++    char buf[1 << 16];
++    while (in) {
++        in.read(buf, (std::streamsize) sizeof(buf));
++        const std::streamsize n = in.gcount();
++        for (std::streamsize i = 0; i < n; ++i) {
++            h ^= (uint64_t) (unsigned char) buf[i];
++            h *= 1099511628211ULL;
++        }
++    }
++    return h;
++}
++
+ static void moss_write_codes_file(
+         const std::string & path,
+         const std::vector<llama_token> & raw_codes,
+         size_t raw_frames,
+-        const moss_delay_config & cfg) {
++        const moss_delay_config & cfg,
++        uint64_t source_fingerprint = 0) {
+     GGML_ASSERT(raw_codes.size() == raw_frames * cfg.n_vq);
+ 
+     std::ofstream out(path, std::ios::binary);
+@@ -1142,11 +1171,73 @@
+     moss_codes_header hdr;
+     hdr.n_frames = (uint32_t) raw_frames;
+     hdr.n_vq = cfg.n_vq;
++    hdr.source_fingerprint = source_fingerprint;
+ 
+     moss_write_exact(out, &hdr, 1, "codes header");
+     moss_write_exact(out, raw_codes.data(), raw_codes.size(), "codes payload");
+ }
+ 
++// 读取 moss_write_codes_file 写出的文件（用于缓存参考音频的 codes，跳过 encoder）
++// 返回 false 表示「这份 codes 不可用」（magic/version/n_vq/取值/截断等任何问题），
++// 调用方据此回退到现场编码 —— 绝不因为一个坏缓存文件就让整个请求失败。
++static bool moss_read_codes_file(
++        const std::string & path,
++        std::vector<llama_token> & raw_codes,
++        size_t & raw_frames,
++        const moss_delay_config & cfg,
++        uint64_t * out_fingerprint = nullptr) {
++    try {
++        std::ifstream in(path, std::ios::binary);
++        if (!in) {
++            throw std::runtime_error("cannot open for reading");
++        }
++
++        moss_codes_header hdr;
++        moss_read_exact(in, &hdr, 1, "codes header");
++        if (hdr.magic != MOSS_CODES_MAGIC) {
++            throw std::runtime_error("wrong magic");
++        }
++        if (hdr.version != MOSS_CODES_VERSION) {
++            throw std::runtime_error(
++                    "unsupported version " + std::to_string(hdr.version) +
++                    " (this build produces/accepts v" + std::to_string(MOSS_CODES_VERSION) + ")");
++        }
++        if ((uint32_t) cfg.n_vq != hdr.n_vq) {
++            throw std::runtime_error(
++                    "quantizer count mismatch: file has " + std::to_string(hdr.n_vq) +
++                    ", model expects " + std::to_string(cfg.n_vq));
++        }
++
++        raw_frames = (size_t) hdr.n_frames;
++        raw_codes.resize((size_t) hdr.n_frames * (size_t) hdr.n_vq);
++        moss_read_exact(in, raw_codes.data(), raw_codes.size(), "codes payload");
++
++        // 取值校验：这些 code 会被当作 token_embd_audio.k（audio_vocab_size 行）的行索引
++        // 送进 ggml_get_rows，而该 kernel 不做边界检查 —— 越界值会直接越界读内存。
++        // 编码器输出的是 1024 类上的 argmax，必然落在 [0, audio_vocab_size)，
++        // 所以只要出现越界值，就说明这个文件不是本模型/本路径产出的。
++        for (size_t i = 0; i < raw_codes.size(); ++i) {
++            if (raw_codes[i] < 0 || (uint32_t) raw_codes[i] >= cfg.audio_vocab_size) {
++                throw std::runtime_error(
++                        "out-of-range code at index " + std::to_string(i) +
++                        ": " + std::to_string((long long) raw_codes[i]) +
++                        " (valid range is [0, " + std::to_string(cfg.audio_vocab_size) + "))");
++            }
++        }
++
++        if (out_fingerprint != nullptr) {
++            *out_fingerprint = hdr.source_fingerprint;
++        }
++        return true;
++    } catch (const std::exception & err) {
++        LOG_ERR("%s: unusable reference codes '%s': %s -- will re-encode instead\n",
++                __func__, path.c_str(), err.what());
++        raw_codes.clear();
++        raw_frames = 0;
++        return false;
++    }
++}
++
+ static bool save_wav16(const std::string & fname, const std::vector<float> & data, int sample_rate) {
+     std::ofstream file(fname, std::ios::binary);
+     if (!file) {
+@@ -1982,6 +2073,8 @@
+         const std::string & text,
+         const std::string & language,
+         const std::string & reference_audio_path,
++        const std::string & reference_codes_path,
++        const std::string & dump_reference_codes_path,
+         int32_t n_gpu_layers,
+         int32_t max_new_tokens,
+         const moss_sampling_config & sampling_cfg,
+@@ -2014,7 +2107,38 @@
+         const llama_vocab * vocab = llama_model_get_vocab(model.get());
+         const moss_delay_config cfg = moss_delay_config_from_model(model.get());
+ 
+-        if (!reference_audio_path.empty()) {
++        bool codes_usable = false;
++        if (!reference_codes_path.empty()) {
++            // 预计算好的参考 codes：直接读，跳过 encoder 模型的加载与编码
++            // （实测省 0.56~0.78s/请求，占固定开销的 25~35%）
++            uint64_t fingerprint = 0;
++            if (moss_read_codes_file(reference_codes_path, reference_codes, reference_frames, cfg,
++                                     &fingerprint)) {
++                // 这里才是「音色会不会搞错」的关键：codes 必须确实来自这份参考音频。
++                // 同时给了 --reference-audio 时才可比对；比不过就退回现场编码，
++                // 宁可慢也不要静默用错音色。
++                if (!reference_audio_path.empty()) {
++                    const uint64_t want = moss_fingerprint_file(reference_audio_path);
++                    if (fingerprint != 0 && fingerprint == want) {
++                        codes_usable = true;
++                    } else {
++                        LOG_ERR("%s: reference codes '%s' do NOT belong to '%s' "
++                                "(fingerprint %016" PRIx64 " vs %016" PRIx64 ") -- "
++                                "ignoring them and re-encoding\n",
++                                __func__, reference_codes_path.c_str(),
++                                reference_audio_path.c_str(), fingerprint, want);
++                        reference_codes.clear();
++                        reference_frames = 0;
++                    }
++                } else {
++                    LOG_ERR("%s: --reference-codes given without --reference-audio: "
++                            "cannot verify which audio it came from\n", __func__);
++                    codes_usable = true;
++                }
++            }
++        }
++
++        if (!codes_usable && !reference_audio_path.empty()) {
+             if (!audio_encoder_model_path.empty()) {
+                 reference_codes = moss_encode_audio_llama(
+                         audio_encoder_model_path,
+@@ -2022,6 +2146,12 @@
+                         n_gpu_layers,
+                         cfg.n_vq,
+                         &reference_frames);
++                if (!dump_reference_codes_path.empty()) {
++                    // 供离线预计算：把参考 codes 存下来，并标注来源音频指纹
++                    moss_write_codes_file(
++                            dump_reference_codes_path, reference_codes, reference_frames, cfg,
++                            moss_fingerprint_file(reference_audio_path));
++                }
+             } else {
+                 throw std::runtime_error("--reference-audio requires --audio-encoder-model");
+             }
+@@ -2354,6 +2484,8 @@
+     std::string text;
+     std::string text_file_path;
+     std::string reference_audio_path;
++    std::string reference_codes_path;
++    std::string dump_reference_codes_path;
+     std::string language = "zh";
+     std::string dump_raw_codes_path;
+     std::string audio_encoder_model_path;
+@@ -2393,6 +2525,17 @@
+             reference_audio_path = argv[++i];
+             continue;
+         }
++        if (arg == "--reference-codes" && i + 1 < argc) {
++            // 预计算好的参考 codes（由 --dump-reference-codes 产出）。
++            // 给了它就完全不需要 --reference-audio / --audio-encoder-model。
++            reference_codes_path = argv[++i];
++            continue;
++        }
++        if (arg == "--dump-reference-codes" && i + 1 < argc) {
++            // 离线预计算用：把 --reference-audio 编码出的 codes 存到这个文件
++            dump_reference_codes_path = argv[++i];
++            continue;
++        }
+         if (arg == "--language" && i + 1 < argc) {
+             language = argv[++i];
+             continue;
+@@ -2563,6 +2706,8 @@
+                     input_text,
+                     language,
+                     reference_audio_path,
++                    reference_codes_path,
++                    dump_reference_codes_path,
+                     n_gpu_layers,
+                     max_new_tokens,
+                     sampling_cfg,

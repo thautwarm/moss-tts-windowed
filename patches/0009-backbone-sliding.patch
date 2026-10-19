@@ -1,0 +1,141 @@
+--- a/tools/tts/run-moss-tts-delay.cpp
++++ b/tools/tts/run-moss-tts-delay.cpp
+@@ -256,6 +256,57 @@
+ static long long g_moss_serve_max_new_tokens = 448;  // 非流式整段解码上限（0 = 不限）
+ static uint32_t g_moss_prefill_ubatch       = 384;  // patch 0006：prefill 每批 token 上限（0 = 不分块）
+ static uint32_t g_moss_prefill_budget_mib  = 1000;  // patch 0006：pp buffer 显存预算（MiB）
++
++// patch 0009：backbone 滑窗（只丢音频行，prompt 前缀钉死）
++static uint32_t g_moss_ctx_rows        = 6000;   // ctx 行数上限（≈1.34 GB KV）
++static uint32_t g_moss_ctx_keep_recent = 2048;   // 滑窗时保留的最近音频行数
++static std::vector<float> g_moss_frame_rms;      // 每个 raw 帧的能量（流式解码时记录）
++
++// patch 0009：在目标点附近挑能量最低的帧作为切点
++static size_t moss_pick_cut(size_t target, size_t pinned, size_t pos) {
++    const size_t lo = target > 16 ? target - 16 : pinned;
++    const size_t hi = std::min<size_t>(target + 16, pos);
++    size_t best = target;
++    float best_rms = 3.4e38f;
++    for (size_t i = lo; i < hi; ++i) {
++        if (i >= g_moss_frame_rms.size()) {
++            break;
++        }
++        const float v = g_moss_frame_rms[i];
++        if (v > 0.0f && v < best_rms) {
++            best_rms = v;
++            best = i;
++        }
++    }
++    return best;
++}
++
++// patch 0009：ctx 快满时丢掉最老的音频行并把尾巴位置平移回去。
++static void moss_maybe_slide(
++        llama_context * ctx,
++        size_t pinned,
++        size_t & pos,
++        size_t n_ctx) {
++    if (pos + 1 < n_ctx) {
++        return;
++    }
++    const size_t keep = g_moss_ctx_keep_recent;
++    const size_t target = pos > keep ? pos - keep : pinned;
++    if (target <= pinned) {
++        return;
++    }
++    const size_t cut = moss_pick_cut(target, pinned, pos);
++    if (cut <= pinned || cut >= pos) {
++        return;
++    }
++    llama_memory_t mem = llama_get_memory(ctx);
++    llama_memory_seq_rm(mem, 0, (llama_pos) pinned, (llama_pos) cut);
++    llama_memory_seq_add(mem, 0, (llama_pos) cut, (llama_pos) pos, -(llama_pos) (cut - pinned));
++    LOG("ctx: 滑窗 dropped %zu rows（切点 %zu，能量 %.5f），pos %zu -> %zu\n",
++        cut - pinned, cut, cut < g_moss_frame_rms.size() ? g_moss_frame_rms[cut] : 0.0f,
++        pos, pos - (cut - pinned));
++    pos -= (cut - pinned);
++}
+ 
+ // patch 0006：按 n_ctx 估算 KV，剩下多少显存就切多大一批 prefill。
+ // 常数是这台机器实测出来的（36 层 f16 KV、Q4_K_M 骨干、8 GB 显卡）：
+@@ -1619,6 +1670,22 @@
+     if (!moss_stream_write_all(g_moss_stream_fd, hdr.data(), hdr.size())) {
+         return false;
+     }
++    // patch 0009：记录每帧 RMS，供滑窗挑低能量切点
++    {
++        const size_t dsr = (size_t) g_moss_stream_dec.downsample_rate;
++        if (g_moss_frame_rms.size() < emit_to) {
++            g_moss_frame_rms.resize(emit_to, 0.0f);
++        }
++        for (size_t f = emit_from; f < emit_to; ++f) {
++            const size_t base = drop + (f - emit_from) * dsr;
++            double acc = 0.0;
++            for (size_t i = 0; i < dsr; ++i) {
++                const double v = pcm[base + i];
++                acc += v * v;
++            }
++            g_moss_frame_rms[f] = (float) std::sqrt(acc / (double) std::max<size_t>(dsr, 1));
++        }
++    }
+     std::vector<int16_t> ints(take);
+     for (size_t i = 0; i < take; ++i) {
+         ints[i] = (int16_t) std::clamp(pcm[drop + i] * 32767.0f, -32768.0f, 32767.0f);
+@@ -2261,7 +2328,13 @@
+         }
+ 
+         llama_context_params cparams = llama_context_default_params();
+-        cparams.n_ctx = std::max<uint32_t>((uint32_t) prompt_frames + (uint32_t) max_new_tokens + 8u, 64u);
++        const uint32_t want_ctx = std::max<uint32_t>(
++                (uint32_t) prompt_frames + (uint32_t) max_new_tokens + 8u, 64u);
++        // patch 0009：ctx 按行数预算封顶；超出的部分靠滑窗滚动（prompt 前缀必须装得下）
++        const uint32_t min_ctx = (uint32_t) prompt_frames + 256u;
++        cparams.n_ctx = std::max<uint32_t>(
++                std::min<uint32_t>(want_ctx, std::max<uint32_t>(g_moss_ctx_rows, min_ctx)),
++                min_ctx);
+         cparams.n_batch = std::max<uint32_t>((uint32_t) prompt_frames, 1u);
+         // patch 0006：pp compute buffer 的大小 ∝ n_ubatch（实测 508 token ≈ 1099 MiB）。
+         // 一次性 prefill 整个 prompt 会在 8 GB 卡上 cudaMalloc 失败，所以按显存预算分块。
+@@ -2288,6 +2361,8 @@
+         }
+ 
+         moss_delay_state state = moss_init_delay_state(prompt_packed, cfg);
++        size_t pos = prompt_frames;               // patch 0009：滑窗后位置会变，独立跟踪
++        g_moss_frame_rms.clear();
+ 
+         std::vector<llama_token> generated_packed;
+         generated_packed.reserve((size_t) max_new_tokens * cfg.packed_stride());
+@@ -2310,13 +2385,15 @@
+                     state, text_logits, audio_logits, sampling_cfg, cfg, rng);
+             generated_packed.insert(generated_packed.end(), next.begin(), next.end());
+ 
++            moss_maybe_slide(ctx.get(), prompt_frames, pos, cparams.n_ctx);   // patch 0009
+             moss_owned_batch batch = moss_batch_from_packed_rows(
+                     generated_packed, generated_packed.size() / cfg.packed_stride() - 1, 1, cfg,
+-                    prompt_frames + (size_t) step, true);
++                    pos, true);
+             const int ret = llama_decode(ctx.get(), batch.batch);
+             if (ret != 0) {
+                 throw std::runtime_error("generation llama_decode failed: " + std::to_string(ret));
+             }
++            ++pos;
+ 
+             if (g_moss_stream_fd >= 0 && (step + 1) % (int32_t) g_moss_stream_window == 0) {
+                 moss_stream_pump(state, prompt_frames, cfg, audio_decoder_model_path, n_gpu_layers);
+@@ -3145,6 +3222,16 @@
+             g_moss_prefill_budget_mib = (uint32_t) std::strtoul(argv[++i], nullptr, 10);
+             continue;
+         }
++        if (arg == "--serve-ctx-rows" && i + 1 < argc) {
++            // patch 0009：backbone ctx 行数上限（滑窗触发点）
++            g_moss_ctx_rows = (uint32_t) std::strtoul(argv[++i], nullptr, 10);
++            continue;
++        }
++        if (arg == "--serve-ctx-keep" && i + 1 < argc) {
++            // patch 0009：滑窗时保留的最近音频行数
++            g_moss_ctx_keep_recent = (uint32_t) std::strtoul(argv[++i], nullptr, 10);
++            continue;
++        }
+         user_args.push_back(arg);
+     }
+ 

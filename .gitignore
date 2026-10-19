@@ -1,0 +1,32 @@
+# 构建产物 / 缓存（可用 scripts/build-llama.sh 重建）
+build/
+ccache/
+__pycache__/
+*.pyc
+
+# 模型与上游源码（体积大，按 README 重新获取）
+models/
+upstream/
+
+# 静态 ffmpeg（77 MB，用 scripts/fetch-ffmpeg.sh 下载并校验）
+docker/bin/
+
+# 运行时数据
+logs/
+run/
+voices/*
+!voices/README.md
+
+# 结果里的音频/中间产物（保留 REPORT.md 和小的 json）
+results/**/*.wav
+results/**/*.ogg
+results/**/*.mp3
+results/**/*.bin
+results/chunks/
+results/daemon.log
+
+# docker build 上下文
+.dockerignore
+
+# 本地配置（从 .env.example 复制）
+.env

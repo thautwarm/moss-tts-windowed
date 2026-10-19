@@ -1,0 +1,85 @@
+{
+  "mode": "unix",
+  "runs": [
+    {
+      "tag": "long-cold",
+      "rc": 0,
+      "wall_ms": 9769.4,
+      "audio_s": 38.32,
+      "rtf": 0.255,
+      "bytes": 1839404
+    },
+    {
+      "tag": "short-cold",
+      "rc": 0,
+      "wall_ms": 1409.2,
+      "audio_s": 4.32,
+      "rtf": 0.326,
+      "bytes": 207404
+    },
+    {
+      "tag": "long-warm-0",
+      "rc": 0,
+      "wall_ms": 8290.8,
+      "audio_s": 38.48,
+      "rtf": 0.215,
+      "bytes": 1847084
+    },
+    {
+      "tag": "long-warm-1",
+      "rc": 0,
+      "wall_ms": 8139.4,
+      "audio_s": 37.76,
+      "rtf": 0.216,
+      "bytes": 1812524
+    },
+    {
+      "tag": "long-warm-2",
+      "rc": 0,
+      "wall_ms": 7547.7,
+      "audio_s": 34.72,
+      "rtf": 0.217,
+      "bytes": 1666604
+    },
+    {
+      "tag": "long-warm-3",
+      "rc": 0,
+      "wall_ms": 8262.8,
+      "audio_s": 38.48,
+      "rtf": 0.215,
+      "bytes": 1847084
+    },
+    {
+      "tag": "short-warm-0",
+      "rc": 0,
+      "wall_ms": 1551.8,
+      "audio_s": 4.96,
+      "rtf": 0.313,
+      "bytes": 238124
+    },
+    {
+      "tag": "short-warm-1",
+      "rc": 0,
+      "wall_ms": 1427.7,
+      "audio_s": 4.32,
+      "rtf": 0.33,
+      "bytes": 207404
+    },
+    {
+      "tag": "short-warm-2",
+      "rc": 0,
+      "wall_ms": 1308.1,
+      "audio_s": 3.68,
+      "rtf": 0.355,
+      "bytes": 176684
+    },
+    {
+      "tag": "short-warm-3",
+      "rc": 0,
+      "wall_ms": 1441.1,
+      "audio_s": 4.48,
+      "rtf": 0.322,
+      "bytes": 215084
+    }
+  ]
+}

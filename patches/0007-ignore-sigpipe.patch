@@ -1,0 +1,21 @@
+--- a/tools/tts/run-moss-tts-delay.cpp
++++ b/tools/tts/run-moss-tts-delay.cpp
+@@ -11,6 +11,7 @@
+ #include <cstdint>
+ #include <cstdlib>
+ #include <cstring>
++#include <csignal>
+ #include <fstream>
+ #include <limits>
+ #include <numeric>
+@@ -3035,6 +3036,10 @@
+         const std::string & sock_path,
+         const std::vector<std::string> & base_args,
+         const std::string & argv0) {
++    // patch 0007：客户端/下游管道一断，写 socket 会触发 SIGPIPE（默认=杀进程）。
++    // 忽略它，让 write 返回 EPIPE —— patch 0005 会把这种情况当成"客户端走了"。
++    ::signal(SIGPIPE, SIG_IGN);
++
+     ::unlink(sock_path.c_str());
+ 
+     const int lfd = ::socket(AF_UNIX, SOCK_STREAM, 0);

@@ -1,0 +1,21 @@
+--- a/tools/tts/run-moss-tts-delay.cpp
++++ b/tools/tts/run-moss-tts-delay.cpp
+@@ -3026,6 +3026,18 @@
+             }
+         }
+ 
++        // patch 0013：只接受协议行（STREAM/CODES/TOKENS/以 '-' 开头的 CLI 参数）。
++        // 其他内容直接 ERR —— 否则会被当参数解析，把 usage 打满日志。
++        if (!body.empty() && body[0] != '-' &&
++                body.rfind("STREAM\t", 0) != 0 &&
++                body.rfind("CODES\t", 0) != 0 &&
++                body.rfind("TOKENS\t", 0) != 0) {
++            if (!moss_write_all(cfd, "ERR 0 unknown request op\n")) {
++                break;
++            }
++            continue;
++        }
++
+         // patch 0010：TOKENS\t<text> -> OK <token 数>
+         if (body.rfind("TOKENS\t", 0) == 0) {
+             const std::string text = body.substr(7);

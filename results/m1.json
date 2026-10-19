@@ -1,0 +1,119 @@
+[
+  {
+    "tag": "cold-long",
+    "resp": "ERR 12458",
+    "wall_ms": 12459.0,
+    "chars": 180,
+    "audio_s": 0.0,
+    "rtf": null,
+    "audio_bytes": null
+  },
+  {
+    "tag": "warm-long-0",
+    "resp": "OK 7758",
+    "wall_ms": 7758.8,
+    "chars": 180,
+    "audio_s": 36.48,
+    "rtf": 0.213,
+    "audio_bytes": 1751084
+  },
+  {
+    "tag": "warm-long-1",
+    "resp": "ERR 17447",
+    "wall_ms": 17447.7,
+    "chars": 180,
+    "audio_s": 0.0,
+    "rtf": null,
+    "audio_bytes": null
+  },
+  {
+    "tag": "warm-long-2",
+    "resp": "ERR 11451",
+    "wall_ms": 11452.0,
+    "chars": 180,
+    "audio_s": 0.0,
+    "rtf": null,
+    "audio_bytes": null
+  },
+  {
+    "tag": "warm-long-3",
+    "resp": "ERR 12696",
+    "wall_ms": 12696.6,
+    "chars": 180,
+    "audio_s": 0.0,
+    "rtf": null,
+    "audio_bytes": null
+  },
+  {
+    "tag": "warm-long-4",
+    "resp": "ERR 13064",
+    "wall_ms": 13064.1,
+    "chars": 180,
+    "audio_s": 0.0,
+    "rtf": null,
+    "audio_bytes": null
+  },
+  {
+    "tag": "warm-short-0",
+    "resp": "OK 1227",
+    "wall_ms": 1227.6,
+    "chars": 17,
+    "audio_s": 3.68,
+    "rtf": 0.334,
+    "audio_bytes": 176684
+  },
+  {
+    "tag": "warm-short-1",
+    "resp": "OK 2015",
+    "wall_ms": 2015.2,
+    "chars": 17,
+    "audio_s": 8.0,
+    "rtf": 0.252,
+    "audio_bytes": 384044
+  },
+  {
+    "tag": "warm-short-2",
+    "resp": "OK 1521",
+    "wall_ms": 1521.5,
+    "chars": 17,
+    "audio_s": 5.36,
+    "rtf": 0.284,
+    "audio_bytes": 257324
+  },
+  {
+    "tag": "warm-ref-0",
+    "resp": "ERR 24745",
+    "wall_ms": 24746.0,
+    "chars": 17,
+    "audio_s": 0.0,
+    "rtf": null,
+    "audio_bytes": null
+  },
+  {
+    "tag": "warm-ref-1",
+    "resp": "ERR 41",
+    "wall_ms": 41.6,
+    "chars": 17,
+    "audio_s": 0.0,
+    "rtf": null,
+    "audio_bytes": null
+  },
+  {
+    "tag": "warm-ref-2",
+    "resp": "ERR 42",
+    "wall_ms": 42.6,
+    "chars": 17,
+    "audio_s": 0.0,
+    "rtf": null,
+    "audio_bytes": null
+  },
+  {
+    "tag": "warm-long-tail",
+    "resp": "OK 8853",
+    "wall_ms": 8853.6,
+    "chars": 180,
+    "audio_s": 42.24,
+    "rtf": 0.21,
+    "audio_bytes": 2027564
+  }
+]
