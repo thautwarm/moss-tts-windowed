@@ -1,0 +1,54 @@
+--- a/tools/tts/run-moss-tts-delay.cpp
++++ b/tools/tts/run-moss-tts-delay.cpp
+@@ -3339,6 +3339,39 @@
+     return moss_cli_main(static_cast<int>(cargs.size()), cargs.data());
+ }
+ 
++// patch 0015：请求文本用 base64 传，避免换行/制表符截断"按行"的内部协议
++static std::string moss_b64_decode(const std::string & in) {
++    static const std::string tbl =
++            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
++    static const std::vector<int> map = [&] {
++        std::vector<int> m(256, -1);
++        for (size_t i = 0; i < tbl.size(); ++i) {
++            m[(unsigned char) tbl[i]] = (int) i;
++        }
++        return m;
++    }();
++
++    std::string out;
++    int val = 0;
++    int bits = -8;
++    for (const unsigned char c : in) {
++        if (c == '=') {
++            break;
++        }
++        const int d = map[c];
++        if (d < 0) {
++            continue;               // 跳过空白（base64 里本来不会有换行）
++        }
++        val = (val << 6) + d;
++        bits += 6;
++        if (bits >= 0) {
++            out.push_back((char) ((val >> bits) & 0xFF));
++            bits -= 8;
++        }
++    }
++    return out;
++}
++
+ static int moss_cli_main(int argc, char ** argv) {
+     std::string model_path;
+     std::string decode_parity_ref_path;
+@@ -3379,6 +3412,11 @@
+             text = argv[++i];
+             continue;
+         }
++        if (arg == "--text-b64" && i + 1 < argc) {
++            // patch 0015：base64 文本（可含换行/制表符而不会破坏行协议）
++            text = moss_b64_decode(argv[++i]);
++            continue;
++        }
+         if (arg == "--text-file" && i + 1 < argc) {
+             text_file_path = argv[++i];
+             continue;
