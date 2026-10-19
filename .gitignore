@@ -5,15 +5,18 @@ __pycache__/
 *.pyc
 
 # 模型与上游源码（体积大，按 README 重新获取）
-models/
+models/*
+!models/.gitkeep
 upstream/
 
 # 静态 ffmpeg（77 MB，用 scripts/fetch-ffmpeg.sh 下载并校验）
 docker/bin/
 
 # 运行时数据
-logs/
-run/
+logs/*
+!logs/.gitkeep
+run/*
+!run/.gitkeep
 voices/*
 !voices/README.md
 
