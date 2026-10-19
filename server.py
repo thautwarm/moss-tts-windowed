@@ -147,7 +147,7 @@ class SpeechRequest(BaseModel):
     input: str = Field(..., min_length=1, max_length=100000, description="要合成的文本（上限 2048 字，8 GB 卡上的显存约束）")
     voice: str = Field(default="default", description="已注册的音色 id，见 /api/v1/voices")
     response_format: str = Field(default="wav", description="wav / mp3 / opus / pcm，见 FORMATS")
-    speed: float = Field(default=1.0, description="OpenAI 协议字段；本部署忽略")
+    speed: float = Field(default=1.0, ge=0.5, le=2.0, description="语速倍率（原生时长控制）")
     language: str = Field(default="zh", description="语言标签，如 zh / en / Chinese")
     max_new_tokens: int = Field(default=512, ge=16, le=MAX_NEW_TOKENS_CAP)
     seed: int = Field(default=-1)
@@ -192,6 +192,8 @@ class ChunkStreamRequest(BaseModel):
     voice: str = Field(default="default", description="已注册音色 id；default = 无参考")
     seed: int = Field(default=-1, description="-1 = 随机")
     audio_format: str = Field(default="wav", description="wav / opus / mp3 / pcm")
+    speed: float = Field(default=1.0, ge=0.5, le=2.0,
+                         description="语速倍率（原生时长控制：1.0 = 模型自然语速）")
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -419,7 +421,8 @@ def _check_model_files() -> list[str]:
 def _daemon_args(text: str, ref_codes: Optional[Path], language: str, max_new_tokens: int,
                  seed: int, temperature: float, top_p: float, top_k: float,
                  repetition_penalty: float, overlap: Optional[int] = None,
-                 lookahead: Optional[int] = None, window: Optional[int] = None) -> list[str]:
+                 lookahead: Optional[int] = None, window: Optional[int] = None,
+                 duration_tokens: Optional[int] = None) -> list[str]:
     args = ["--text", text, "--language", language,
             "--max-new-tokens", str(max_new_tokens),
             "--audio-temperature", str(temperature),
@@ -431,6 +434,9 @@ def _daemon_args(text: str, ref_codes: Optional[Path], language: str, max_new_to
             "--stream-lookahead", str(STREAM_LOOKAHEAD if lookahead is None else lookahead)]
     if seed >= 0:
         args += ["--seed", str(seed)]
+    if duration_tokens is not None:
+        # patch 0014：写进 prompt 的 - Tokens 字段（原生时长控制）
+        args += ["--duration-tokens", str(duration_tokens)]
     if ref_codes is not None:
         # 只给 codes：daemon 里 encoder 不常驻，现场编码会 OOM（见 README 二）
         args += ["--reference-codes", str(ref_codes)]
@@ -723,6 +729,16 @@ def _truncate_text(text: str) -> tuple[str, int]:
     return kept, len(text) - len(kept)
 
 
+def _speed_tokens(speed: float, ntok: int) -> Optional[int]:
+    """speed -> 目标音频帧数（1 帧 = 0.08 s）。speed=1.0 返回 None（不干预，保持模型自然长度）。"""
+    if speed is None or abs(speed - 1.0) < 1e-3:
+        return None
+    base = int(ntok * FRAMES_PER_TOKEN) + 32          # 估算的自然帧数
+    lo = max(16, int(ntok * 2.0))                     # 别压到说不出话
+    hi = MAX_GEN_FRAMES
+    return max(lo, min(hi, int(round(base / speed))))
+
+
 def _codes_frames(p: Optional[Path]) -> int:
     """参考音色的 codes 帧数（文件头第 3 个 u32）。"""
     if p is None:
@@ -842,58 +858,150 @@ async def _pump_into_queue(ds: "AsyncDaemonStream", q: "asyncio.Queue",
         q.put_nowait(_SPOOL_SENTINEL)
 
 
-async def _pcm_stream_response(ds: "AsyncDaemonStream", fmt: str):
-    """`stream=true` 的裸 PCM 流：pcm 直接透传；wav 先发 44 字节头（长度未知填 0xFFFFFFFF）。"""
+async def _pcm_stream_response(ds: "AsyncDaemonStream", fmt: str, speed: float = 1.0):
+    """`stream=true` 的裸 PCM 流：pcm 直接透传；wav 先发 44 字节头（长度未知）。
+
+    speed != 1.0 时先过一个 ffmpeg 的 atempo（保持音高）。
+    """
     mime = FORMATS[fmt][1]
 
-    async def gen():
-        q: asyncio.Queue = asyncio.Queue()
-        pump = asyncio.create_task(_pump_into_queue(ds, q))
+    if speed is None or abs(speed - 1.0) < 1e-3:
+        async def gen():
+            q: asyncio.Queue = asyncio.Queue()
+            pump = asyncio.create_task(_pump_into_queue(ds, q))
+            try:
+                if fmt == "wav":
+                    head = bytearray(_pcm_wav(b"", ds.rate, ds.channels))
+                    head[4:8] = struct.pack("<I", 0xFFFFFFFF)
+                    head[40:44] = struct.pack("<I", 0xFFFFFFFF)
+                    yield bytes(head)
+                while True:
+                    item = await q.get()
+                    if item is _SPOOL_SENTINEL:
+                        break
+                    yield item
+            finally:
+                ds.close()
+                if not pump.done():
+                    pump.cancel()
+                with contextlib.suppress(BaseException):
+                    await pump
+        return StreamingResponse(gen(), media_type=mime, headers={
+            "Cache-Control": "no-store", "X-Accel-Buffering": "no",
+            "X-Format": fmt, "X-Streaming": "1", "X-Sample-Rate": str(ds.rate),
+        })
+
+    # speed != 1：PCM -> ffmpeg atempo -> PCM
+    argv = ["ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-probesize", "32", "-analyzeduration", "0",
+            "-f", "s16le", "-ar", str(ds.rate), "-ac", str(ds.channels), "-i", "-",
+            "-filter:a", f"atempo={speed:.3f}", "-f", "s16le", "-"]
+
+    async def gen_speed():
         try:
-            sent = 0
+            proc = await asyncio.create_subprocess_exec(
+                *argv, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE, limit=1 << 16)
+        except BaseException:
+            ds.close()          # 启动失败也必须释放 slot
+            raise
+        q: asyncio.Queue = asyncio.Queue()
+
+        async def pump_pcm():
+            try:
+                while True:
+                    data = await ds.read_pcm()
+                    if data is None:
+                        break
+                    proc.stdin.write(data)
+                    await proc.stdin.drain()
+            except (DaemonError, BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                with contextlib.suppress(Exception):
+                    proc.stdin.close()
+                ds.close()
+
+        async def drain_out():
+            try:
+                while True:
+                    chunk = await proc.stdout.read(8192)
+                    if not chunk:
+                        break
+                    q.put_nowait(chunk)
+            finally:
+                q.put_nowait(_SPOOL_SENTINEL)
+
+        async def drain_err():
+            with contextlib.suppress(Exception):
+                err = await proc.stderr.read()
+                if err:
+                    print(f"[stream:{fmt}] {err.decode('utf-8','replace').strip()[:300]}", flush=True)
+
+        t1 = asyncio.create_task(pump_pcm())
+        t2 = asyncio.create_task(drain_out())
+        t3 = asyncio.create_task(drain_err())
+        try:
             if fmt == "wav":
                 head = bytearray(_pcm_wav(b"", ds.rate, ds.channels))
                 head[4:8] = struct.pack("<I", 0xFFFFFFFF)
                 head[40:44] = struct.pack("<I", 0xFFFFFFFF)
                 yield bytes(head)
-                sent += len(head)
             while True:
                 item = await q.get()
                 if item is _SPOOL_SENTINEL:
                     break
-                sent += len(item)
                 yield item
         finally:
-            print(f"[req] resp done fmt={fmt} sent={sent}B", flush=True)
             ds.close()
-            if not pump.done():
-                pump.cancel()
+            for t in (t1, t2, t3):
+                if not t.done():
+                    t.cancel()
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.terminate()
             with contextlib.suppress(BaseException):
-                await pump
+                await asyncio.wait_for(proc.wait(), 5)
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+            for t in (t1, t2, t3):
+                with contextlib.suppress(BaseException):
+                    await t
 
-    return StreamingResponse(gen(), media_type=mime, headers={
+    return StreamingResponse(gen_speed(), media_type=mime, headers={
         "Cache-Control": "no-store", "X-Accel-Buffering": "no",
         "X-Format": fmt, "X-Streaming": "1", "X-Sample-Rate": str(ds.rate),
     })
 
 
-def _encoder_argv(fmt: str, rate: int, channels: int) -> list[str]:
+def _atempo_filter(speed: float) -> list[str]:
+    """语速：atempo 保持音高。1.0 不加滤镜。"""
+    if speed is None or abs(speed - 1.0) < 1e-3:
+        return []
+    return ["-filter:a", f"atempo={speed:.3f}"]
+
+
+def _encoder_argv(fmt: str, rate: int, channels: int,
+                  speed: float = 1.0) -> list[str]:
     """流式编码器的命令行。stdin = 裸 s16le PCM，stdout = 容器字节流。"""
     if fmt == "opus":
         return ["ffmpeg", "-hide_banner", "-loglevel", "error",
                 "-probesize", "32", "-analyzeduration", "0",
-                "-f", "s16le", "-ar", str(rate), "-ac", str(channels), "-i", "-",
+                "-f", "s16le", "-ar", str(rate), "-ac", str(channels), "-i", "-"] \
+               + _atempo_filter(speed) + [
                 "-c:a", "libopus", "-b:a", OPUS_BITRATE,
                 "-f", "ogg", "-page_duration", "20000", "-"]
     if fmt == "mp3":
         return ["ffmpeg", "-hide_banner", "-loglevel", "error",
                 "-probesize", "32", "-analyzeduration", "0",
-                "-f", "s16le", "-ar", str(rate), "-ac", str(channels), "-i", "-",
+                "-f", "s16le", "-ar", str(rate), "-ac", str(channels), "-i", "-"] \
+               + _atempo_filter(speed) + [
                 "-c:a", "libmp3lame", "-b:a", MP3_BITRATE, "-f", "mp3", "-"]
     raise HTTPException(400, f"response_format={fmt!r} 不支持流式编码")
 
 
-def _encoded_stream_response(ds: "AsyncDaemonStream", fmt: str):
+def _encoded_stream_response(ds: "AsyncDaemonStream", fmt: str, speed: float = 1.0):
     """`stream=true` 的压缩流（opus/mp3）：ffmpeg/lame 常驻管道，边收边编边发。
 
     生命周期只有三条出口，全在 `finally` 里收：正常结束 / 客户端断线（框架取消 task）/
@@ -902,16 +1010,20 @@ def _encoded_stream_response(ds: "AsyncDaemonStream", fmt: str):
     mime = FORMATS[fmt][1]
 
     async def gen():
-        argv = _encoder_argv(fmt, ds.rate, ds.channels)
-        if shutil.which(argv[0]) is None:
-            raise HTTPException(501, f"response_format={fmt!r} 需要 {argv[0]}，但容器里没有")
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            limit=1 << 16,
-        )
+        try:
+            argv = _encoder_argv(fmt, ds.rate, ds.channels, speed)
+            if shutil.which(argv[0]) is None:
+                raise HTTPException(501, f"response_format={fmt!r} 需要 {argv[0]}，但容器里没有")
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                limit=1 << 16,
+            )
+        except BaseException:
+            ds.close()          # 同理：任何失败都先还 slot
+            raise
 
         q: asyncio.Queue = asyncio.Queue()
 
@@ -1023,7 +1135,7 @@ async def health():
                          "on_overflow": "truncate"},
         "stream": {
             "path": "/v1/audio/speech/stream",
-            "request": ["prompt", "voice", "seed", "audio_format"],
+            "request": ["prompt", "voice", "seed", "audio_format", "speed"],
             "extra_fields": "ignored",
             "default": {"voice": "default", "seed": -1, "audio_format": "wav"},
             "server_defaults": {"language": STREAM_LANGUAGE, "max_new_tokens": STREAM_MNT,
@@ -1197,9 +1309,9 @@ async def openai_speech(req: SpeechRequest, request: Request):
     if req.stream:
         ds = await AsyncDaemonStream.open(args)
         if fmt in ("mp3", "opus"):
-            resp = _encoded_stream_response(ds, fmt)      # 常驻管道：边收边编边发
+            resp = _encoded_stream_response(ds, fmt, req.speed)      # 常驻管道：边收边编边发
         else:
-            resp = await _pcm_stream_response(ds, fmt)    # pcm 透传 / wav 未知长度头
+            resp = await _pcm_stream_response(ds, fmt, req.speed)    # pcm 透传 / wav 未知长度头
         resp.headers["X-Voice"] = voice_id
         if dropped:
             resp.headers["X-Input-Truncated"] = str(dropped)
@@ -1247,9 +1359,9 @@ async def openai_speech_stream(req: ChunkStreamRequest):
           f"{_text_echo(text)}", flush=True)
     # 2026-10-18：body 改成**裸音频流**（ogg/opus、mp3、wav、pcm），不再套 msgpack 帧。
     if fmt in ("mp3", "opus"):
-        resp = _encoded_stream_response(ds, fmt)
+        resp = _encoded_stream_response(ds, fmt, req.speed)
     else:
-        resp = await _pcm_stream_response(ds, fmt)
+        resp = await _pcm_stream_response(ds, fmt, req.speed)
     resp.headers["X-Voice"] = voice_id
     if dropped:
         resp.headers["X-Input-Truncated"] = str(dropped)

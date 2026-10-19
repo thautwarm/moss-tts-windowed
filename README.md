@@ -143,7 +143,8 @@ curl -X DELETE http://127.0.0.1:6677/api/v1/voices/alice
   "prompt": "要合成的文本（≤2048 字）",
   "voice": "alice",            // 默认 "default"（无参考音色）
   "seed": 42,                  // -1 = 随机
-  "audio_format": "opus"       // wav | opus | mp3 | pcm
+  "audio_format": "opus",      // wav | opus | mp3 | pcm
+  "speed": 1.0                 // 0.5–2.0，默认 1.0（atempo 变速，保持音高）
 }
 ```
 
@@ -155,6 +156,8 @@ curl -X DELETE http://127.0.0.1:6677/api/v1/voices/alice
 | `mp3` | `audio/mpeg` | 128 kbps，24 kHz |
 | `wav` | `audio/wav` | 24 kHz / 单声道 / 16-bit，长度字段填 `0xFFFFFFFF` |
 | `pcm` | `audio/pcm` | 24 kHz / 单声道 / s16le 裸流 |
+
+`speed` 用 ffmpeg 的 `atempo` 实现（保持音高），0.5–2.0；`1.0` 时不走任何滤镜。
 
 ```bash
 # 存成文件

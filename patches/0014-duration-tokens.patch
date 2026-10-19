@@ -1,0 +1,44 @@
+--- a/tools/tts/run-moss-tts-delay.cpp
++++ b/tools/tts/run-moss-tts-delay.cpp
+@@ -289,6 +289,7 @@
+ 
+ // patch 0010：精确分词（常驻词表，vocab_only，不占显存）
+ static std::string        g_moss_vocab_model_path;
++static long long g_moss_duration_tokens = -1;   // patch 0014：-1 = 不指定（写 None）
+ static const llama_vocab * g_moss_vocab = nullptr;
+ 
+ // patch 0009：在目标点附近挑能量最低的帧作为切点
+@@ -2065,7 +2066,9 @@
+             "<user_inst>\n"
+             "- Reference(s):\n" + ref_str + "\n"
+             "- Instruction:\nNone\n"
+-            "- Tokens:\nNone\n"
++            "- Tokens:\n" + (g_moss_duration_tokens >= 0
++                    ? std::to_string(g_moss_duration_tokens)
++                    : std::string("None")) + "\n"
+             "- Quality:\nNone\n"
+             "- Sound Event:\nNone\n"
+             "- Ambient Sound:\nNone\n"
+@@ -3316,6 +3319,10 @@
+             g_moss_vocab_model_path = argv[++i];
+             continue;
+         }
++        if (arg == "--serve-duration-tokens" && i + 1 < argc) {
++            g_moss_duration_tokens = std::strtoll(argv[++i], nullptr, 10);
++            continue;
++        }
+         user_args.push_back(arg);
+     }
+ 
+@@ -3412,6 +3419,11 @@
+             max_new_tokens = std::stoi(argv[++i]);
+             continue;
+         }
++        if (arg == "--duration-tokens" && i + 1 < argc) {
++            // patch 0014：写进 prompt 的 - Tokens 字段（原生时长控制）
++            g_moss_duration_tokens = std::strtoll(argv[++i], nullptr, 10);
++            continue;
++        }
+         if (arg == "--stream-window" && i + 1 < argc) {
+             // patch 0004：流式每块推进的帧数（1 帧 ≈ 0.08 s 音频）
+             g_moss_stream_window = (uint32_t) std::strtoul(argv[++i], nullptr, 10);
